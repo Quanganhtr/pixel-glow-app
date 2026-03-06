@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__claude_ai_Figma__whoami",
+      "Bash(npm run build)",
+      "mcp__claude_ai_Figma__get_design_context",
+      "Bash(npm install html2canvas --save)",
+      "mcp__claude_ai_Figma__get_metadata"
+    ]
+  }
+}
