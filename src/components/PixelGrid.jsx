@@ -160,45 +160,23 @@ export default function PixelGrid() {
   const [animTiming, setAnimTiming] = useState(ANIM_DEFAULTS);
   const animTimerRef = useRef(null);
   const [isExportOpen, setIsExportOpen] = useState(false);
+  const [glowEnabled, setGlowEnabled] = useState(true);
   const [bgColor, setBgColor] = useState(BG);
   const [pixelRadius, setPixelRadius] = useState(0); // 0–50 (%)
   const [pixelGap, setPixelGap] = useState(0);       // px
   const [zoom, setZoom] = useState(1);
-  const [sidebarOpen, setSidebarOpen] = useState(true);
-  const [noiseSize, setNoiseSize] = useState(2);
-  const [noiseDensity, setNoiseDensity] = useState(50);
-  const [noiseColor, setNoiseColor] = useState('#ffffff');
-  const [noiseColorOpacity, setNoiseColorOpacity] = useState(0);
-  const noiseCanvasRef = useRef(null);
+  const [isMobile, setIsMobile] = useState(() => window.innerWidth < 768);
+  const [sidebarOpen, setSidebarOpen] = useState(() => window.innerWidth >= 768);
 
   useEffect(() => {
-    const canvas = noiseCanvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-
-    const drawNoise = () => {
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-      if (noiseColorOpacity === 0) return;
-      const r = parseInt(noiseColor.slice(1, 3), 16);
-      const g = parseInt(noiseColor.slice(3, 5), 16);
-      const b = parseInt(noiseColor.slice(5, 7), 16);
-      ctx.fillStyle = `rgba(${r},${g},${b},${noiseColorOpacity / 100})`;
-      const s = Math.max(1, noiseSize);
-      for (let y = 0; y < canvas.height; y += s)
-        for (let x = 0; x < canvas.width; x += s)
-          if (Math.random() < noiseDensity / 100)
-            ctx.fillRect(x, y, s, s);
+    const handler = () => {
+      const mobile = window.innerWidth < 768;
+      setIsMobile(mobile);
+      if (!mobile) setSidebarOpen(true);
     };
-
-    if (animPlaying && noiseColorOpacity > 0) {
-      let rafId;
-      const loop = () => { drawNoise(); rafId = requestAnimationFrame(loop); };
-      rafId = requestAnimationFrame(loop);
-      return () => cancelAnimationFrame(rafId);
-    } else {
-      drawNoise();
-    }
-  }, [noiseSize, noiseDensity, noiseColor, noiseColorOpacity, animPlaying]);
+    window.addEventListener('resize', handler);
+    return () => window.removeEventListener('resize', handler);
+  }, []);
 
   const paint = useCallback((row, col) => {
     setGrid(prev => {
@@ -338,6 +316,7 @@ export default function PixelGrid() {
       ctx.fillStyle = bgColor;
       ctx.fillRect(0, 0, W, H);
 
+      if (glowEnabled) {
       // Pass 1: ambient bleed
       for (let r = 0; r < rows; r++) {
         for (let c = 0; c < cols; c++) {
@@ -386,6 +365,7 @@ export default function PixelGrid() {
         fillRoundRect(ctx, ex + OFFSCREEN, ey + OFFSCREEN, ECS, ECS, ECR);
         ctx.restore();
       }
+      } // end glowEnabled
 
       // Pass 3: core pixels
       ctx.shadowColor = 'transparent'; ctx.shadowBlur = 0;
@@ -397,7 +377,7 @@ export default function PixelGrid() {
         if (animI < 0.01) continue;
         const { color, intensity } = cell;
         const eff = intensity * animI;
-        ctx.fillStyle = lightenToL(color, 75 + eff * 20);
+        ctx.fillStyle = glowEnabled ? lightenToL(color, 75 + eff * 20) : color;
         fillRoundRect(ctx, cxf(c), cyf(r), CS, CS, CR);
       }
     };
@@ -430,57 +410,47 @@ export default function PixelGrid() {
     const CS = CELL_SIZE * S;
     const CR = CS * pixelRadius / 100;
 
-    for (let r = 0; r < rows; r++) {
-      for (let c = 0; c < cols; c++) {
-        if (grid[r][c]) continue;
-        const cellReach = 1.0 + cellRandom(r, c) * 2.5;
-        const nearest = getNearestPaintedNeighbor(grid, r, c, rows, cols, Math.ceil(cellReach));
-        if (!nearest || nearest.dist > cellReach) continue;
-        const { color } = nearest.cell;
-        const opacityHex = Math.round((0.05 + cellRandom2(r, c) * 0.25) * 255).toString(16).padStart(2, '0');
-        ctx.fillStyle = `${color}${opacityHex}`;
-        fillRoundRect(ctx, cx(c), cy(r), CS, CS, CR);
+    if (glowEnabled) {
+      for (let r = 0; r < rows; r++) {
+        for (let c = 0; c < cols; c++) {
+          if (grid[r][c]) continue;
+          const cellReach = 1.0 + cellRandom(r, c) * 2.5;
+          const nearest = getNearestPaintedNeighbor(grid, r, c, rows, cols, Math.ceil(cellReach));
+          if (!nearest || nearest.dist > cellReach) continue;
+          const { color } = nearest.cell;
+          const opacityHex = Math.round((0.05 + cellRandom2(r, c) * 0.25) * 255).toString(16).padStart(2, '0');
+          ctx.fillStyle = `${color}${opacityHex}`;
+          fillRoundRect(ctx, cx(c), cy(r), CS, CS, CR);
+        }
       }
-    }
 
-    const SPREAD = 8 * S;
-    const OFFSCREEN = 200000;
-    for (let r = 0; r < rows; r++) {
-      for (let c = 0; c < cols; c++) {
-        const cell = grid[r][c];
-        if (!cell) continue;
-        const { color, intensity } = cell;
-        const px = cx(c), py = cy(r);
-        const glowAlphaHex = Math.round(intensity * 255).toString(16).padStart(2, '0');
-        const ex = px - SPREAD, ey = py - SPREAD;
-        const ECS = CS + SPREAD * 2;
-        const ECR = CR + SPREAD;
-        const whiteAlpha = (intensity * 0.32).toFixed(3);
-
-        ctx.save();
-        ctx.shadowOffsetX = -OFFSCREEN;
-        ctx.shadowOffsetY = -OFFSCREEN;
-
-        ctx.fillStyle = `${color}${glowAlphaHex}`;
-        ctx.shadowColor = `${color}${glowAlphaHex}`;
-        ctx.shadowBlur = 96 * S;
-        fillRoundRect(ctx, ex + OFFSCREEN, ey + OFFSCREEN, ECS, ECS, ECR);
-        fillRoundRect(ctx, ex + OFFSCREEN, ey + OFFSCREEN, ECS, ECS, ECR);
-        ctx.shadowBlur = 40 * S;
-        fillRoundRect(ctx, ex + OFFSCREEN, ey + OFFSCREEN, ECS, ECS, ECR);
-
-        ctx.fillStyle = `rgba(255,255,255,${whiteAlpha})`;
-        ctx.shadowColor = `rgba(255,255,255,${whiteAlpha})`;
-        ctx.shadowBlur = 32 * S;
-        fillRoundRect(ctx, ex + OFFSCREEN, ey + OFFSCREEN, ECS, ECS, ECR);
-        fillRoundRect(ctx, ex + OFFSCREEN, ey + OFFSCREEN, ECS, ECS, ECR);
-
-        ctx.fillStyle = 'rgba(0,0,0,0.25)';
-        ctx.shadowColor = 'rgba(0,0,0,0.25)';
-        ctx.shadowBlur = 96 * S;
-        fillRoundRect(ctx, ex + OFFSCREEN, ey + OFFSCREEN, ECS, ECS, ECR);
-
-        ctx.restore();
+      const SPREAD = 8 * S;
+      const OFFSCREEN = 200000;
+      for (let r = 0; r < rows; r++) {
+        for (let c = 0; c < cols; c++) {
+          const cell = grid[r][c];
+          if (!cell) continue;
+          const { color, intensity } = cell;
+          const px = cx(c), py = cy(r);
+          const glowAlphaHex = Math.round(intensity * 255).toString(16).padStart(2, '0');
+          const ex = px - SPREAD, ey = py - SPREAD;
+          const ECS = CS + SPREAD * 2;
+          const ECR = CR + SPREAD;
+          const whiteAlpha = (intensity * 0.32).toFixed(3);
+          ctx.save();
+          ctx.shadowOffsetX = -OFFSCREEN; ctx.shadowOffsetY = -OFFSCREEN;
+          ctx.fillStyle = `${color}${glowAlphaHex}`; ctx.shadowColor = `${color}${glowAlphaHex}`; ctx.shadowBlur = 96 * S;
+          fillRoundRect(ctx, ex + OFFSCREEN, ey + OFFSCREEN, ECS, ECS, ECR);
+          fillRoundRect(ctx, ex + OFFSCREEN, ey + OFFSCREEN, ECS, ECS, ECR);
+          ctx.shadowBlur = 40 * S;
+          fillRoundRect(ctx, ex + OFFSCREEN, ey + OFFSCREEN, ECS, ECS, ECR);
+          ctx.fillStyle = `rgba(255,255,255,${whiteAlpha})`; ctx.shadowColor = `rgba(255,255,255,${whiteAlpha})`; ctx.shadowBlur = 32 * S;
+          fillRoundRect(ctx, ex + OFFSCREEN, ey + OFFSCREEN, ECS, ECS, ECR);
+          fillRoundRect(ctx, ex + OFFSCREEN, ey + OFFSCREEN, ECS, ECS, ECR);
+          ctx.fillStyle = 'rgba(0,0,0,0.25)'; ctx.shadowColor = 'rgba(0,0,0,0.25)'; ctx.shadowBlur = 96 * S;
+          fillRoundRect(ctx, ex + OFFSCREEN, ey + OFFSCREEN, ECS, ECS, ECR);
+          ctx.restore();
+        }
       }
     }
 
@@ -491,7 +461,7 @@ export default function PixelGrid() {
         const cell = grid[r][c];
         if (!cell) continue;
         const { color, intensity } = cell;
-        ctx.fillStyle = lightenToL(color, 75 + intensity * 20);
+        ctx.fillStyle = glowEnabled ? lightenToL(color, 75 + intensity * 20) : color;
         fillRoundRect(ctx, cx(c), cy(r), CS, CS, CR);
       }
     }
@@ -531,15 +501,17 @@ export default function PixelGrid() {
 
     const els = [`<rect width="${W}" height="${H}" fill="${bgColor}"/>`];
 
-    for (let r = 0; r < rows; r++) {
-      for (let c = 0; c < cols; c++) {
-        if (grid[r][c]) continue;
-        const cellReach = 1.0 + cellRandom(r, c) * 2.5;
-        const nearest = getNearestPaintedNeighbor(grid, r, c, rows, cols, Math.ceil(cellReach));
-        if (!nearest || nearest.dist > cellReach) continue;
-        const { color } = nearest.cell;
-        const opacity = (0.05 + cellRandom2(r, c) * 0.25).toFixed(3);
-        els.push(`<rect x="${ox(c)}" y="${oy(r)}" width="${CS}" height="${CS}"${rxAttr} fill="${color}" opacity="${opacity}"/>`);
+    if (glowEnabled) {
+      for (let r = 0; r < rows; r++) {
+        for (let c = 0; c < cols; c++) {
+          if (grid[r][c]) continue;
+          const cellReach = 1.0 + cellRandom(r, c) * 2.5;
+          const nearest = getNearestPaintedNeighbor(grid, r, c, rows, cols, Math.ceil(cellReach));
+          if (!nearest || nearest.dist > cellReach) continue;
+          const { color } = nearest.cell;
+          const opacity = (0.05 + cellRandom2(r, c) * 0.25).toFixed(3);
+          els.push(`<rect x="${ox(c)}" y="${oy(r)}" width="${CS}" height="${CS}"${rxAttr} fill="${color}" opacity="${opacity}"/>`);
+        }
       }
     }
 
@@ -548,15 +520,19 @@ export default function PixelGrid() {
         const cell = grid[r][c];
         if (!cell) continue;
         const { color, intensity } = cell;
-        const lightColor = lightenToL(color, 75 + intensity * 20);
-        const alpha = intensity.toFixed(3);
-        const whiteAlpha = (intensity * 0.32).toFixed(3);
         const x = ox(c), y = oy(r);
-        els.push(`<rect x="${x}" y="${y}" width="${CS}" height="${CS}"${rxAttr} fill="${color}" opacity="${alpha}" filter="url(#halo-wide)"/>`);
-        els.push(`<rect x="${x}" y="${y}" width="${CS}" height="${CS}"${rxAttr} fill="${color}" opacity="${alpha}" filter="url(#halo-wide)"/>`);
-        els.push(`<rect x="${x}" y="${y}" width="${CS}" height="${CS}"${rxAttr} fill="${color}" opacity="${alpha}" filter="url(#halo-tight)"/>`);
-        els.push(`<rect x="${x}" y="${y}" width="${CS}" height="${CS}"${rxAttr} fill="white" opacity="${whiteAlpha}" filter="url(#bloom)"/>`);
-        els.push(`<rect x="${x}" y="${y}" width="${CS}" height="${CS}"${rxAttr} fill="${lightColor}"/>`);
+        if (glowEnabled) {
+          const lightColor = lightenToL(color, 75 + intensity * 20);
+          const alpha = intensity.toFixed(3);
+          const whiteAlpha = (intensity * 0.32).toFixed(3);
+          els.push(`<rect x="${x}" y="${y}" width="${CS}" height="${CS}"${rxAttr} fill="${color}" opacity="${alpha}" filter="url(#halo-wide)"/>`);
+          els.push(`<rect x="${x}" y="${y}" width="${CS}" height="${CS}"${rxAttr} fill="${color}" opacity="${alpha}" filter="url(#halo-wide)"/>`);
+          els.push(`<rect x="${x}" y="${y}" width="${CS}" height="${CS}"${rxAttr} fill="${color}" opacity="${alpha}" filter="url(#halo-tight)"/>`);
+          els.push(`<rect x="${x}" y="${y}" width="${CS}" height="${CS}"${rxAttr} fill="white" opacity="${whiteAlpha}" filter="url(#bloom)"/>`);
+          els.push(`<rect x="${x}" y="${y}" width="${CS}" height="${CS}"${rxAttr} fill="${lightColor}"/>`);
+        } else {
+          els.push(`<rect x="${x}" y="${y}" width="${CS}" height="${CS}"${rxAttr} fill="${color}"/>`);
+        }
       }
     }
 
@@ -598,30 +574,36 @@ export default function PixelGrid() {
         <feGaussianBlur stdDeviation="16"/>
       </filter>`;
     const els = [`<rect width="${W}" height="${H}" fill="${bgColor}"/>`];
-    for (let r = 0; r < rows; r++)
-      for (let c = 0; c < cols; c++) {
-        if (grid[r][c]) continue;
-        const cellReach = 1.0 + cellRandom(r, c) * 2.5;
-        const nearest = getNearestPaintedNeighbor(grid, r, c, rows, cols, Math.ceil(cellReach));
-        if (!nearest || nearest.dist > cellReach) continue;
-        const { color } = nearest.cell;
-        const opacity = (0.05 + cellRandom2(r, c) * 0.25).toFixed(3);
-        els.push(`<rect x="${ox(c)}" y="${oy(r)}" width="${CS}" height="${CS}"${rxAttr} fill="${color}" opacity="${opacity}"/>`);
-      }
+    if (glowEnabled) {
+      for (let r = 0; r < rows; r++)
+        for (let c = 0; c < cols; c++) {
+          if (grid[r][c]) continue;
+          const cellReach = 1.0 + cellRandom(r, c) * 2.5;
+          const nearest = getNearestPaintedNeighbor(grid, r, c, rows, cols, Math.ceil(cellReach));
+          if (!nearest || nearest.dist > cellReach) continue;
+          const { color } = nearest.cell;
+          const opacity = (0.05 + cellRandom2(r, c) * 0.25).toFixed(3);
+          els.push(`<rect x="${ox(c)}" y="${oy(r)}" width="${CS}" height="${CS}"${rxAttr} fill="${color}" opacity="${opacity}"/>`);
+        }
+    }
     for (let r = 0; r < rows; r++)
       for (let c = 0; c < cols; c++) {
         const cell = grid[r][c];
         if (!cell) continue;
         const { color, intensity } = cell;
-        const lightColor = lightenToL(color, 75 + intensity * 20);
-        const alpha = intensity.toFixed(3);
-        const whiteAlpha = (intensity * 0.32).toFixed(3);
         const x = ox(c), y = oy(r);
-        els.push(`<rect x="${x}" y="${y}" width="${CS}" height="${CS}"${rxAttr} fill="${color}" opacity="${alpha}" filter="url(#halo-wide)"/>`);
-        els.push(`<rect x="${x}" y="${y}" width="${CS}" height="${CS}"${rxAttr} fill="${color}" opacity="${alpha}" filter="url(#halo-wide)"/>`);
-        els.push(`<rect x="${x}" y="${y}" width="${CS}" height="${CS}"${rxAttr} fill="${color}" opacity="${alpha}" filter="url(#halo-tight)"/>`);
-        els.push(`<rect x="${x}" y="${y}" width="${CS}" height="${CS}"${rxAttr} fill="white" opacity="${whiteAlpha}" filter="url(#bloom)"/>`);
-        els.push(`<rect x="${x}" y="${y}" width="${CS}" height="${CS}"${rxAttr} fill="${lightColor}"/>`);
+        if (glowEnabled) {
+          const lightColor = lightenToL(color, 75 + intensity * 20);
+          const alpha = intensity.toFixed(3);
+          const whiteAlpha = (intensity * 0.32).toFixed(3);
+          els.push(`<rect x="${x}" y="${y}" width="${CS}" height="${CS}"${rxAttr} fill="${color}" opacity="${alpha}" filter="url(#halo-wide)"/>`);
+          els.push(`<rect x="${x}" y="${y}" width="${CS}" height="${CS}"${rxAttr} fill="${color}" opacity="${alpha}" filter="url(#halo-wide)"/>`);
+          els.push(`<rect x="${x}" y="${y}" width="${CS}" height="${CS}"${rxAttr} fill="${color}" opacity="${alpha}" filter="url(#halo-tight)"/>`);
+          els.push(`<rect x="${x}" y="${y}" width="${CS}" height="${CS}"${rxAttr} fill="white" opacity="${whiteAlpha}" filter="url(#bloom)"/>`);
+          els.push(`<rect x="${x}" y="${y}" width="${CS}" height="${CS}"${rxAttr} fill="${lightColor}"/>`);
+        } else {
+          els.push(`<rect x="${x}" y="${y}" width="${CS}" height="${CS}"${rxAttr} fill="${color}"/>`);
+        }
       }
     const svg = `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">
@@ -646,51 +628,53 @@ export default function PixelGrid() {
     const cy = r => r * (CELL_SIZE + pixelGap) * S + PAD;
     const CS = CELL_SIZE * S;
     const CR = CS * pixelRadius / 100;
-    for (let r = 0; r < rows; r++)
-      for (let c = 0; c < cols; c++) {
-        if (grid[r][c]) continue;
-        const cellReach = 1.0 + cellRandom(r, c) * 2.5;
-        const nearest = getNearestPaintedNeighbor(grid, r, c, rows, cols, Math.ceil(cellReach));
-        if (!nearest || nearest.dist > cellReach) continue;
-        const { color } = nearest.cell;
-        const opacityHex = Math.round((0.05 + cellRandom2(r, c) * 0.25) * 255).toString(16).padStart(2, '0');
-        ctx.fillStyle = `${color}${opacityHex}`;
-        fillRoundRect(ctx, cx(c), cy(r), CS, CS, CR);
-      }
-    const SPREAD = 8 * S;
-    const OFFSCREEN = 200000;
-    for (let r = 0; r < rows; r++)
-      for (let c = 0; c < cols; c++) {
-        const cell = grid[r][c];
-        if (!cell) continue;
-        const { color, intensity } = cell;
-        const px = cx(c), py = cy(r);
-        const glowAlphaHex = Math.round(intensity * 255).toString(16).padStart(2, '0');
-        const ex = px - SPREAD, ey = py - SPREAD;
-        const ECS = CS + SPREAD * 2;
-        const ECR = CR + SPREAD;
-        const whiteAlpha = (intensity * 0.32).toFixed(3);
-        ctx.save();
-        ctx.shadowOffsetX = -OFFSCREEN; ctx.shadowOffsetY = -OFFSCREEN;
-        ctx.fillStyle = `${color}${glowAlphaHex}`; ctx.shadowColor = `${color}${glowAlphaHex}`; ctx.shadowBlur = 96 * S;
-        fillRoundRect(ctx, ex + OFFSCREEN, ey + OFFSCREEN, ECS, ECS, ECR);
-        fillRoundRect(ctx, ex + OFFSCREEN, ey + OFFSCREEN, ECS, ECS, ECR);
-        ctx.shadowBlur = 40 * S;
-        fillRoundRect(ctx, ex + OFFSCREEN, ey + OFFSCREEN, ECS, ECS, ECR);
-        ctx.fillStyle = `rgba(255,255,255,${whiteAlpha})`; ctx.shadowColor = `rgba(255,255,255,${whiteAlpha})`; ctx.shadowBlur = 32 * S;
-        fillRoundRect(ctx, ex + OFFSCREEN, ey + OFFSCREEN, ECS, ECS, ECR);
-        fillRoundRect(ctx, ex + OFFSCREEN, ey + OFFSCREEN, ECS, ECS, ECR);
-        ctx.fillStyle = 'rgba(0,0,0,0.25)'; ctx.shadowColor = 'rgba(0,0,0,0.25)'; ctx.shadowBlur = 96 * S;
-        fillRoundRect(ctx, ex + OFFSCREEN, ey + OFFSCREEN, ECS, ECS, ECR);
-        ctx.restore();
-      }
+    if (glowEnabled) {
+      for (let r = 0; r < rows; r++)
+        for (let c = 0; c < cols; c++) {
+          if (grid[r][c]) continue;
+          const cellReach = 1.0 + cellRandom(r, c) * 2.5;
+          const nearest = getNearestPaintedNeighbor(grid, r, c, rows, cols, Math.ceil(cellReach));
+          if (!nearest || nearest.dist > cellReach) continue;
+          const { color } = nearest.cell;
+          const opacityHex = Math.round((0.05 + cellRandom2(r, c) * 0.25) * 255).toString(16).padStart(2, '0');
+          ctx.fillStyle = `${color}${opacityHex}`;
+          fillRoundRect(ctx, cx(c), cy(r), CS, CS, CR);
+        }
+      const SPREAD = 8 * S;
+      const OFFSCREEN = 200000;
+      for (let r = 0; r < rows; r++)
+        for (let c = 0; c < cols; c++) {
+          const cell = grid[r][c];
+          if (!cell) continue;
+          const { color, intensity } = cell;
+          const px = cx(c), py = cy(r);
+          const glowAlphaHex = Math.round(intensity * 255).toString(16).padStart(2, '0');
+          const ex = px - SPREAD, ey = py - SPREAD;
+          const ECS = CS + SPREAD * 2;
+          const ECR = CR + SPREAD;
+          const whiteAlpha = (intensity * 0.32).toFixed(3);
+          ctx.save();
+          ctx.shadowOffsetX = -OFFSCREEN; ctx.shadowOffsetY = -OFFSCREEN;
+          ctx.fillStyle = `${color}${glowAlphaHex}`; ctx.shadowColor = `${color}${glowAlphaHex}`; ctx.shadowBlur = 96 * S;
+          fillRoundRect(ctx, ex + OFFSCREEN, ey + OFFSCREEN, ECS, ECS, ECR);
+          fillRoundRect(ctx, ex + OFFSCREEN, ey + OFFSCREEN, ECS, ECS, ECR);
+          ctx.shadowBlur = 40 * S;
+          fillRoundRect(ctx, ex + OFFSCREEN, ey + OFFSCREEN, ECS, ECS, ECR);
+          ctx.fillStyle = `rgba(255,255,255,${whiteAlpha})`; ctx.shadowColor = `rgba(255,255,255,${whiteAlpha})`; ctx.shadowBlur = 32 * S;
+          fillRoundRect(ctx, ex + OFFSCREEN, ey + OFFSCREEN, ECS, ECS, ECR);
+          fillRoundRect(ctx, ex + OFFSCREEN, ey + OFFSCREEN, ECS, ECS, ECR);
+          ctx.fillStyle = 'rgba(0,0,0,0.25)'; ctx.shadowColor = 'rgba(0,0,0,0.25)'; ctx.shadowBlur = 96 * S;
+          fillRoundRect(ctx, ex + OFFSCREEN, ey + OFFSCREEN, ECS, ECS, ECR);
+          ctx.restore();
+        }
+    }
     ctx.shadowColor = 'transparent'; ctx.shadowBlur = 0;
     for (let r = 0; r < rows; r++)
       for (let c = 0; c < cols; c++) {
         const cell = grid[r][c];
         if (!cell) continue;
         const { color, intensity } = cell;
-        ctx.fillStyle = lightenToL(color, 75 + intensity * 20);
+        ctx.fillStyle = glowEnabled ? lightenToL(color, 75 + intensity * 20) : color;
         fillRoundRect(ctx, cx(c), cy(r), CS, CS, CR);
       }
     canvas.toBlob(blob => navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]));
@@ -705,19 +689,33 @@ export default function PixelGrid() {
       onMouseUp={handleMouseUp}
       onMouseLeave={handleMouseUp}
     >
+      {/* ─── Mobile backdrop ─── */}
+      {isMobile && sidebarOpen && (
+        <div
+          style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', zIndex: 55 }}
+          onClick={() => setSidebarOpen(false)}
+        />
+      )}
+
       {/* ─── Left Sidebar ─── */}
       <div
         className="shrink-0 flex flex-col"
         style={{
-          width: sidebarOpen ? 360 : 48,
+          width: sidebarOpen ? 320 : (isMobile ? 0 : 48),
           background: '#0e0e0e',
-          borderRight: '1px solid #1c1c1c',
+          borderRight: isMobile ? 'none' : '1px solid #1c1c1c',
           transition: 'width 0.25s ease',
           overflow: 'hidden',
-          position: 'relative',
+          position: isMobile ? 'fixed' : 'relative',
+          top: isMobile ? 0 : undefined,
+          left: isMobile ? 0 : undefined,
+          height: isMobile ? '100dvh' : undefined,
+          zIndex: isMobile ? 60 : undefined,
+          boxShadow: isMobile && sidebarOpen ? '4px 0 24px rgba(0,0,0,0.5)' : 'none',
         }}
       >
-        {/* Toggle button */}
+        {/* Toggle button — desktop only */}
+        {!isMobile && (
         <button
           onClick={() => setSidebarOpen(o => !o)}
           style={{
@@ -735,16 +733,29 @@ export default function PixelGrid() {
               : <path d="M4 2L8 6L4 10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>}
           </svg>
         </button>
+        )}
 
         {/* Scrollable content */}
         <div
           className="flex flex-col gap-3 p-4 overflow-y-auto flex-1"
-          style={{ width: 360, opacity: sidebarOpen ? 1 : 0, transition: 'opacity 0.15s ease', pointerEvents: sidebarOpen ? 'auto' : 'none' }}
+          style={{ width: 320, opacity: sidebarOpen ? 1 : 0, transition: 'opacity 0.15s ease', pointerEvents: sidebarOpen ? 'auto' : 'none' }}
         >
         {/* Header */}
-        <div className="px-1 pt-3 pb-1">
-          <h1 className="text-xl font-bold" style={{ color: '#fff' }}>PixelGlow Tool</h1>
-          <p className="text-xs mt-0.5" style={{ color: '#444' }}>Vibe-coding by Quang</p>
+        <div className="px-1 pt-3 pb-1 flex items-start justify-between">
+          <div>
+            <h1 className="text-xl font-bold" style={{ color: '#fff' }}>PixelGlow Tool</h1>
+            <p className="text-xs mt-0.5" style={{ color: '#444' }}>Vibe-coding by Quang</p>
+          </div>
+          {isMobile && (
+            <button
+              onClick={() => setSidebarOpen(false)}
+              style={{ width: 28, height: 28, borderRadius: 8, background: '#1e1e1e', border: '1px solid #2a2a2a', color: '#555', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, marginTop: 4 }}
+            >
+              <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+                <path d="M2 2L10 10M10 2L2 10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+              </svg>
+            </button>
+          )}
         </div>
 
         {/* Layout */}
@@ -788,7 +799,21 @@ export default function PixelGrid() {
 
         {/* Tools */}
         <div className="rounded-xl p-3" style={{ background: '#141414', border: '1px solid #282828' }}>
-          <span className="text-xs mb-3 block" style={{ color: '#555' }}>Tools</span>
+          <div className="flex items-center justify-between mb-3">
+            <span className="text-xs" style={{ color: '#555' }}>Tools</span>
+            <button
+              onClick={() => setGlowEnabled(g => !g)}
+              className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold"
+              style={glowEnabled
+                ? { border: '1.5px solid #e84040', color: '#e84040' }
+                : { border: '1px solid #2a2a2a', color: '#555' }}
+            >
+              <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 24 24">
+                <path d="M12 2a7 7 0 017 7c0 2.97-1.85 5.5-4.5 6.6V18a.5.5 0 01-.5.5h-4a.5.5 0 01-.5-.5v-2.4C6.85 14.5 5 11.97 5 9a7 7 0 017-7zm-2 19h4v1a1 1 0 01-1 1h-2a1 1 0 01-1-1v-1z"/>
+              </svg>
+              Glow {glowEnabled ? 'On' : 'Off'}
+            </button>
+          </div>
           <div className="flex gap-2">
             <button
               onClick={() => setIsErasing(e => !e)}
@@ -919,54 +944,6 @@ export default function PixelGrid() {
               >{pixelGap}</div>
             </div>
           </div>
-          {/* Noise */}
-          <div className="mt-3 pt-3" style={{ borderTop: '1px solid #222' }}>
-            <span className="text-xs mb-3 block" style={{ color: '#555' }}>Noise</span>
-            {/* Size + Density row */}
-            <div className="flex gap-2 mb-2">
-              <div className="flex-1">
-                <span className="text-xs block mb-1" style={{ color: '#555' }}>Size</span>
-                <input
-                  type="number" min={1} max={20} step={1}
-                  value={noiseSize}
-                  onChange={e => setNoiseSize(Math.min(20, Math.max(1, Number(e.target.value))))}
-                  className="w-full bg-transparent text-sm font-mono outline-none px-2 py-1.5 rounded-lg text-center"
-                  style={{ color: '#fff', border: '1px solid #2a2a2a', background: '#1e1e1e' }}
-                />
-              </div>
-              <div className="flex-1">
-                <span className="text-xs block mb-1" style={{ color: '#555' }}>Density %</span>
-                <input
-                  type="number" min={0} max={100} step={1}
-                  value={noiseDensity}
-                  onChange={e => setNoiseDensity(Math.min(100, Math.max(0, Number(e.target.value))))}
-                  className="w-full bg-transparent text-sm font-mono outline-none px-2 py-1.5 rounded-lg text-center"
-                  style={{ color: '#fff', border: '1px solid #2a2a2a', background: '#1e1e1e' }}
-                />
-              </div>
-            </div>
-            {/* Color + Opacity row */}
-            <div className="flex gap-2">
-              <div className="flex-1">
-                <span className="text-xs block mb-1" style={{ color: '#555' }}>Color</span>
-                <label className="flex items-center gap-2 px-2 py-1.5 rounded-lg cursor-pointer" style={{ border: '1px solid #2a2a2a', background: '#1e1e1e' }}>
-                  <div className="w-4 h-4 rounded shrink-0" style={{ backgroundColor: noiseColor, border: '1px solid rgba(255,255,255,0.15)' }} />
-                  <span className="text-xs font-mono flex-1" style={{ color: '#fff' }}>{noiseColor.toUpperCase()}</span>
-                  <input type="color" value={noiseColor} onChange={e => setNoiseColor(e.target.value)} className="opacity-0 w-0 h-0 absolute" />
-                </label>
-              </div>
-              <div className="flex-1">
-                <span className="text-xs block mb-1" style={{ color: '#555' }}>Opacity %</span>
-                <input
-                  type="number" min={0} max={100} step={1}
-                  value={noiseColorOpacity}
-                  onChange={e => setNoiseColorOpacity(Math.min(100, Math.max(0, Number(e.target.value))))}
-                  className="w-full bg-transparent text-sm font-mono outline-none px-2 py-1.5 rounded-lg text-center"
-                  style={{ color: '#fff', border: '1px solid #2a2a2a', background: '#1e1e1e' }}
-                />
-              </div>
-            </div>
-          </div>
         </div>
 
         {/* Animation */}
@@ -1083,18 +1060,18 @@ export default function PixelGrid() {
           pointerEvents: 'none',
           mixBlendMode: 'overlay',
         }} />
-        {/* Noise overlay */}
-        <canvas
-          ref={noiseCanvasRef}
-          width={1920} height={1080}
-          style={{
-            position: 'absolute', inset: 0,
-            width: '100%', height: '100%',
-            pointerEvents: 'none',
-            zIndex: 5,
-            opacity: noiseColorOpacity > 0 ? 1 : 0,
-          }}
-        />
+        {/* Mobile hamburger */}
+        {isMobile && (
+          <button
+            onClick={() => setSidebarOpen(true)}
+            style={{ position: 'absolute', top: 16, left: 16, zIndex: 10, width: 36, height: 36, borderRadius: 10, background: '#1e1e1e', border: '1px solid #2a2a2a', color: '#aaa', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+          >
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+              <path d="M2 4h12M2 8h12M2 12h12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+            </svg>
+          </button>
+        )}
+
         {/* Zoom controls */}
         <div style={{ position: 'absolute', bottom: 16, right: 16, zIndex: 10, display: 'flex', alignItems: 'center', gap: 6 }}>
           <button
@@ -1112,6 +1089,7 @@ export default function PixelGrid() {
           >−</button>
         </div>
         <div ref={containerRef} style={{ padding: '48px', overflow: 'visible', position: 'relative', zIndex: 1, transform: `scale(${zoom})`, transformOrigin: 'center center' }}>
+          <div style={{ position: 'relative', display: 'inline-block' }}>
           <div
             ref={gridRef}
             style={{
@@ -1131,7 +1109,11 @@ export default function PixelGrid() {
                 const seqIdx = animSequence.findIndex(p => p.r === r && p.c === c);
 
                 let cellStyle;
-                if (animTime >= 0) {
+                if (!glowEnabled) {
+                  cellStyle = grid[r][c]
+                    ? { backgroundColor: grid[r][c].color }
+                    : { backgroundColor: bgColor };
+                } else if (animTime >= 0) {
                   if (seqIdx >= 0 && grid[r][c]) {
                     const animI = getPixelAnimIntensity(animTime, seqIdx, animTiming);
                     if (animI > 0.01) {
@@ -1203,6 +1185,7 @@ export default function PixelGrid() {
               })
             )}
           </div>
+          </div> {/* end grid wrapper */}
         </div>
       </div>
 
