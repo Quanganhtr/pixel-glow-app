@@ -985,15 +985,11 @@ export default function PixelGrid() {
 
       {/* ─── Right: Grid canvas ─── */}
       <div
-        className="flex-1 flex items-center justify-center overflow-auto relative"
+        className="flex-1 flex items-center justify-center overflow-hidden relative"
         style={{
           backgroundImage: 'radial-gradient(circle, rgba(255,255,255,0.25) 1px, transparent 1px)',
           backgroundSize: '24px 24px',
           backgroundColor: '#080808',
-        }}
-        onWheel={e => {
-          e.preventDefault();
-          setZoom(z => Math.min(4, Math.max(0.25, z - e.deltaY * 0.001)));
         }}
       >
         <div style={{
