@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback, useRef, useEffect } from 'react';
 
 const DEFAULT_ROWS = 16;
 const DEFAULT_COLS = 16;
@@ -165,6 +165,40 @@ export default function PixelGrid() {
   const [pixelGap, setPixelGap] = useState(0);       // px
   const [zoom, setZoom] = useState(1);
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [noiseSize, setNoiseSize] = useState(2);
+  const [noiseDensity, setNoiseDensity] = useState(50);
+  const [noiseColor, setNoiseColor] = useState('#ffffff');
+  const [noiseColorOpacity, setNoiseColorOpacity] = useState(0);
+  const noiseCanvasRef = useRef(null);
+
+  useEffect(() => {
+    const canvas = noiseCanvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+
+    const drawNoise = () => {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      if (noiseColorOpacity === 0) return;
+      const r = parseInt(noiseColor.slice(1, 3), 16);
+      const g = parseInt(noiseColor.slice(3, 5), 16);
+      const b = parseInt(noiseColor.slice(5, 7), 16);
+      ctx.fillStyle = `rgba(${r},${g},${b},${noiseColorOpacity / 100})`;
+      const s = Math.max(1, noiseSize);
+      for (let y = 0; y < canvas.height; y += s)
+        for (let x = 0; x < canvas.width; x += s)
+          if (Math.random() < noiseDensity / 100)
+            ctx.fillRect(x, y, s, s);
+    };
+
+    if (animPlaying && noiseColorOpacity > 0) {
+      let rafId;
+      const loop = () => { drawNoise(); rafId = requestAnimationFrame(loop); };
+      rafId = requestAnimationFrame(loop);
+      return () => cancelAnimationFrame(rafId);
+    } else {
+      drawNoise();
+    }
+  }, [noiseSize, noiseDensity, noiseColor, noiseColorOpacity, animPlaying]);
 
   const paint = useCallback((row, col) => {
     setGrid(prev => {
@@ -862,7 +896,7 @@ export default function PixelGrid() {
             </div>
           </div>
           {/* Spacing */}
-          <div>
+          <div className="mb-3">
             <div className="flex items-center justify-between mb-1">
               <span className="text-xs" style={{ color: '#555' }}>Spacing</span>
               <span className="text-xs font-mono" style={{ color: '#888' }}>{pixelGap}px</span>
@@ -883,6 +917,54 @@ export default function PixelGrid() {
                   background: '#222', color: '#ccc', border: '1px solid #333'
                 }}
               >{pixelGap}</div>
+            </div>
+          </div>
+          {/* Noise */}
+          <div className="mt-3 pt-3" style={{ borderTop: '1px solid #222' }}>
+            <span className="text-xs mb-3 block" style={{ color: '#555' }}>Noise</span>
+            {/* Size + Density row */}
+            <div className="flex gap-2 mb-2">
+              <div className="flex-1">
+                <span className="text-xs block mb-1" style={{ color: '#555' }}>Size</span>
+                <input
+                  type="number" min={1} max={20} step={1}
+                  value={noiseSize}
+                  onChange={e => setNoiseSize(Math.min(20, Math.max(1, Number(e.target.value))))}
+                  className="w-full bg-transparent text-sm font-mono outline-none px-2 py-1.5 rounded-lg text-center"
+                  style={{ color: '#fff', border: '1px solid #2a2a2a', background: '#1e1e1e' }}
+                />
+              </div>
+              <div className="flex-1">
+                <span className="text-xs block mb-1" style={{ color: '#555' }}>Density %</span>
+                <input
+                  type="number" min={0} max={100} step={1}
+                  value={noiseDensity}
+                  onChange={e => setNoiseDensity(Math.min(100, Math.max(0, Number(e.target.value))))}
+                  className="w-full bg-transparent text-sm font-mono outline-none px-2 py-1.5 rounded-lg text-center"
+                  style={{ color: '#fff', border: '1px solid #2a2a2a', background: '#1e1e1e' }}
+                />
+              </div>
+            </div>
+            {/* Color + Opacity row */}
+            <div className="flex gap-2">
+              <div className="flex-1">
+                <span className="text-xs block mb-1" style={{ color: '#555' }}>Color</span>
+                <label className="flex items-center gap-2 px-2 py-1.5 rounded-lg cursor-pointer" style={{ border: '1px solid #2a2a2a', background: '#1e1e1e' }}>
+                  <div className="w-4 h-4 rounded shrink-0" style={{ backgroundColor: noiseColor, border: '1px solid rgba(255,255,255,0.15)' }} />
+                  <span className="text-xs font-mono flex-1" style={{ color: '#fff' }}>{noiseColor.toUpperCase()}</span>
+                  <input type="color" value={noiseColor} onChange={e => setNoiseColor(e.target.value)} className="opacity-0 w-0 h-0 absolute" />
+                </label>
+              </div>
+              <div className="flex-1">
+                <span className="text-xs block mb-1" style={{ color: '#555' }}>Opacity %</span>
+                <input
+                  type="number" min={0} max={100} step={1}
+                  value={noiseColorOpacity}
+                  onChange={e => setNoiseColorOpacity(Math.min(100, Math.max(0, Number(e.target.value))))}
+                  className="w-full bg-transparent text-sm font-mono outline-none px-2 py-1.5 rounded-lg text-center"
+                  style={{ color: '#fff', border: '1px solid #2a2a2a', background: '#1e1e1e' }}
+                />
+              </div>
             </div>
           </div>
         </div>
@@ -1001,6 +1083,18 @@ export default function PixelGrid() {
           pointerEvents: 'none',
           mixBlendMode: 'overlay',
         }} />
+        {/* Noise overlay */}
+        <canvas
+          ref={noiseCanvasRef}
+          width={1920} height={1080}
+          style={{
+            position: 'absolute', inset: 0,
+            width: '100%', height: '100%',
+            pointerEvents: 'none',
+            zIndex: 5,
+            opacity: noiseColorOpacity > 0 ? 1 : 0,
+          }}
+        />
         {/* Zoom controls */}
         <div style={{ position: 'absolute', bottom: 16, right: 16, zIndex: 10, display: 'flex', alignItems: 'center', gap: 6 }}>
           <button
