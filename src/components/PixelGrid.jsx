@@ -4,7 +4,7 @@ const DEFAULT_ROWS = 16;
 const DEFAULT_COLS = 16;
 const CELL_SIZE = 28;
 const BG = '#050505';
-const ANIM_DEFAULTS = { glowIn: 0.2, hold: 1.0, glowOut: 0.5, stagger: 0.5 };
+const ANIM_DEFAULTS = { glowIn: 0.2, hold: 1.0, glowOut: 0.5, stagger: 0.5, loopDelay: 0.5 };
 
 const RATIO_PRESETS = {
   '1:1':  [1, 1],
@@ -87,17 +87,50 @@ function getNearestPaintedNeighbor(grid, r, c, rows, cols, maxDist) {
 }
 
 // Returns 0→1→1→0 intensity for a sequence pixel at time t
-function getPixelAnimIntensity(t, seqIdx, timing) {
+function getPixelAnimIntensity(t, seqIdx, timing, loop = false) {
   const { glowIn, hold, glowOut, stagger } = timing;
   const start = seqIdx * stagger;
-  const rel = t - start;
+  let rel = t - start;
   if (rel <= 0) return 0;
+  if (loop) {
+    const { loopDelay = 0 } = timing;
+    const period = glowIn + hold + glowOut + loopDelay;
+    rel = rel % period;
+  }
   if (rel < glowIn) return rel / glowIn;
   if (rel < glowIn + hold) return 1;
   const fadeStart = glowIn + hold;
   if (rel < fadeStart + glowOut) return 1 - (rel - fadeStart) / glowOut;
   return 0;
 }
+
+// Icon mode: pixels start ON (glowing), turn off in sequence, loop back
+function getIconPixelAnimIntensity(t, seqIdx, timing, loop = false) {
+  const { glowOut, stagger, loopDelay = 0.5, glowIn = 0.2, hold = 1.0 } = timing;
+  const start = seqIdx * stagger;
+  if (t < start) return 1; // not its turn yet — fully on
+  if (!loop) {
+    const rel = t - start;
+    if (rel < glowOut) return 1 - rel / glowOut;
+    return 0;
+  }
+  const period = glowOut + loopDelay + glowIn + hold;
+  const rel = (t - start) % period;
+  if (rel < glowOut) return 1 - rel / glowOut;           // fading out
+  if (rel < glowOut + loopDelay) return 0;               // dark pause
+  if (rel < glowOut + loopDelay + glowIn) return (rel - glowOut - loopDelay) / glowIn; // fading back in
+  return 1;                                               // fully on
+}
+
+function hexToLottieColor(hex) {
+  return [
+    parseInt(hex.slice(1, 3), 16) / 255,
+    parseInt(hex.slice(3, 5), 16) / 255,
+    parseInt(hex.slice(5, 7), 16) / 255,
+    1,
+  ];
+}
+
 
 function fillRoundRect(ctx, x, y, w, h, r) {
   if (r <= 0) { ctx.fillRect(x, y, w, h); return; }
@@ -159,6 +192,11 @@ export default function PixelGrid() {
   const [videoRes, setVideoRes] = useState('FHD');
   const [animTiming, setAnimTiming] = useState(ANIM_DEFAULTS);
   const animTimerRef = useRef(null);
+  const animLoopRef = useRef(false);
+  const [animLoop, setAnimLoop] = useState(false);
+  const iconAnimModeRef = useRef(false);
+  const [iconAnimMode, setIconAnimMode] = useState(false);
+  const [lottieDuration, setLottieDuration] = useState(3);
   const [isExportOpen, setIsExportOpen] = useState(false);
   const [glowEnabled, setGlowEnabled] = useState(true);
   const [bgColor, setBgColor] = useState(BG);
@@ -225,12 +263,14 @@ export default function PixelGrid() {
     cancelAnimationFrame(animTimerRef.current);
     setAnimPlaying(true);
     const { glowIn, hold, glowOut, stagger } = animTiming;
-    const totalDur = (painted.length - 1) * stagger + glowIn + hold + glowOut + 0.3;
+    const totalDur = iconAnimModeRef.current
+      ? (painted.length - 1) * stagger + glowOut + 0.3
+      : (painted.length - 1) * stagger + glowIn + hold + glowOut + 0.3;
     const t0 = performance.now();
     const tick = (now) => {
       const t = (now - t0) / 1000;
       setAnimTime(t);
-      if (t < totalDur) {
+      if (animLoopRef.current || t < totalDur) {
         animTimerRef.current = requestAnimationFrame(tick);
       } else {
         setAnimTime(-1);
@@ -251,12 +291,14 @@ export default function PixelGrid() {
     stopAnimation();
     setAnimPlaying(true);
     const { glowIn, hold, glowOut, stagger } = animTiming;
-    const totalDur = (animSequence.length - 1) * stagger + glowIn + hold + glowOut + 0.3;
+    const totalDur = iconAnimModeRef.current
+      ? (animSequence.length - 1) * stagger + glowOut + 0.3
+      : (animSequence.length - 1) * stagger + glowIn + hold + glowOut + 0.3;
     const t0 = performance.now();
     const tick = (now) => {
       const t = (now - t0) / 1000;
       setAnimTime(t);
-      if (t < totalDur) {
+      if (animLoopRef.current || t < totalDur) {
         animTimerRef.current = requestAnimationFrame(tick);
       } else {
         setAnimTime(-1);
@@ -680,6 +722,130 @@ export default function PixelGrid() {
     canvas.toBlob(blob => navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]));
   };
 
+  const handleExportLottie = () => {
+    const FPS = 60;
+    const SCALE = 4;
+    const CS = CELL_SIZE * SCALE;
+    const GAP = pixelGap * SCALE;
+    const W = cols * CS + (cols - 1) * GAP;
+    const H = rows * CS + (rows - 1) * GAP;
+    const CR = pixelRadius > 0 ? (pixelRadius / 100) * (CS / 2) : 0;
+    const { glowIn, hold, glowOut, stagger, loopDelay = 0.5 } = animTiming;
+    const n = Math.max(animSequence.length, 1);
+    const totalFrames = Math.max(Math.ceil(lottieDuration * FPS), 2);
+
+    // Non-loop: three zones
+    //   0 → phase1End (60%): sequential fade-out
+    //   phase1End → phase2End (88%): all dark, return fade
+    //   phase2End → totalFrames (100%): hold at full glow — guarantees last frame is lit
+    const naturalFadeOutEndSec = (n - 1) * stagger + glowOut;
+    const phase1End = Math.round(totalFrames * 0.60);
+    const phase2End = Math.round(totalFrames * 0.88);
+    const fadeScale = phase1End / (naturalFadeOutEndSec * FPS || 1);
+
+    // Loop mode: timeScale fits the natural loop duration into lottieDuration
+    const naturalLoopSec = (n - 1) * stagger + (glowOut + loopDelay + glowIn + hold) * 3;
+    const timeScale = lottieDuration / naturalLoopSec;
+
+    const seqMap = new Map(animSequence.map((p, i) => [`${p.r},${p.c}`, i]));
+    const cellX = c => c * (CS + GAP) + CS / 2;
+    const cellY = r => r * (CS + GAP) + CS / 2;
+
+    // eased keyframe helpers
+    const kfAt = (frame, v) => ({ i:{x:[0.833],y:[0.833]}, o:{x:[0.167],y:[0.167]}, t:Math.round(frame), s:[v] });
+    const kfSec = (tSec, v) => kfAt(tSec * timeScale * FPS, v); // for loop mode
+
+    const makeOpacityKFs = (seqIdx) => {
+      const kfs = [];
+      if (!animLoop) {
+        // Phase 1: this pixel fades out at its staggered time, scaled to phase1
+        const f0 = Math.round(seqIdx * stagger * FPS * fadeScale);
+        const f1 = Math.round((seqIdx * stagger + glowOut) * FPS * fadeScale);
+        if (f0 > 0) kfs.push(kfAt(0, 100));
+        kfs.push(kfAt(f0, 100));
+        kfs.push(kfAt(f1, 0));
+        // Phase 2: all return together — dark until phase1End, glowing by phase2End
+        if (phase1End > f1) kfs.push(kfAt(phase1End, 0));
+        kfs.push(kfAt(phase2End, 100));
+        kfs.push({ t: totalFrames - 1, s: [100] });
+      } else {
+        const period = glowOut + loopDelay + glowIn + hold;
+        for (let cycle = 0; ; cycle++) {
+          const base = seqIdx * stagger + cycle * period;
+          if (base * timeScale * FPS > totalFrames) break;
+          if (cycle === 0 && base > 0) kfs.push(kfSec(0, 100));
+          kfs.push(kfSec(base, 100));
+          kfs.push(kfSec(base + glowOut, 0));
+          const fin = base + glowOut + loopDelay;
+          if (fin * timeScale * FPS < totalFrames) {
+            kfs.push(kfSec(fin, 0));
+            kfs.push(kfSec(fin + glowIn, 100));
+          }
+        }
+        if (kfs.length === 0) kfs.push(kfAt(0, 100));
+        kfs.push({ t: totalFrames, s: [100] });
+      }
+      return { a: 1, k: kfs };
+    };
+
+    // scale animated opacity KFs by maxOp (0–100)
+    const scaleOpKF = (opKF, maxOp) => opKF.a === 0
+      ? { a:0, k: (opKF.k / 100) * maxOp }
+      : { a:1, k: opKF.k.map(kf => kf.s ? { ...kf, s:[(kf.s[0] / 100) * maxOp] } : kf) };
+
+    const layers = [];
+    let layerIdx = 1;
+
+    const makeLayer = (nm, cx, cy, shapes, opKF, bm = 0) => ({
+      ddd:0, ind:layerIdx++, ty:4, nm, sr:1,
+      ks:{ o:opKF, r:{a:0,k:0}, p:{a:0,k:[cx,cy,0]}, a:{a:0,k:[0,0,0]}, s:{a:0,k:[100,100,100]} },
+      shapes, ip:0, op:totalFrames, st:0, bm,
+    });
+
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        const cell = grid[r][c];
+        if (!cell) continue;
+        const key = `${r},${c}`;
+        const si = seqMap.has(key) ? seqMap.get(key) : null;
+        const opKF = si !== null ? makeOpacityKFs(si) : { a:0, k:100 };
+        const lightColor = hexToLottieColor(lightenToL(cell.color, 75 + cell.intensity * 20));
+        const rawColor = hexToLottieColor(cell.color);
+        const [rv, gv, bv] = rawColor;
+        const cx = cellX(c), cy = cellY(r);
+
+        // Core pixel first (will end up under glow after reverse)
+        layers.push(makeLayer(`p_${r}_${c}`, cx, cy, [{ ty:'gr', it:[
+          { ty:'rc', d:1, s:{a:0,k:[CS,CS]}, p:{a:0,k:[0,0]}, r:{a:0,k:CR} },
+          { ty:'fl', c:{a:0,k:glowEnabled ? lightColor : rawColor}, o:{a:0,k:100} },
+          { ty:'tr', p:{a:0,k:[0,0]}, a:{a:0,k:[0,0]}, s:{a:0,k:[100,100]}, r:{a:0,k:0}, o:{a:0,k:100} },
+        ]}], opKF));
+
+        // Radial gradient glow halos (inner → outer, Add blend, on top after reverse)
+        if (glowEnabled) {
+          for (const [size, maxOp] of [[CS*1.6, 55], [CS*2.8, 30], [CS*4.5, 14]]) {
+            const gradData = [0, rv, gv, bv, 1, rv, gv, bv, 0, 1, 1, 0];
+            layers.push(makeLayer(`gl_${r}_${c}_${size}`, cx, cy, [{ ty:'gr', it:[
+              { ty:'el', d:1, s:{a:0,k:[size,size]}, p:{a:0,k:[0,0]} },
+              { ty:'gf', o:{a:0,k:100}, r:1, s:{a:0,k:[0,0]}, e:{a:0,k:[size/2,0]}, t:2,
+                g:{ p:2, k:{ a:0, k:gradData } } },
+              { ty:'tr', p:{a:0,k:[0,0]}, a:{a:0,k:[0,0]}, s:{a:0,k:[100,100]}, r:{a:0,k:0}, o:{a:0,k:100} },
+            ]}], scaleOpKF(opKF, maxOp), 4));
+          }
+        }
+      }
+    }
+
+    // reverse so index-0 = topmost (outer glow on top with Add blend = correct bloom)
+    const lottie = { v:'5.7.4', fr:FPS, ip:0, op:totalFrames, w:W, h:H,
+      nm:'PixelGlow Icon', ddd:0, assets:[], layers:layers.reverse() };
+    const blob = new Blob([JSON.stringify(lottie)], { type:'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = 'pixelglow-icon.json'; a.click();
+    URL.revokeObjectURL(url);
+  };
+
   const grainBg = `url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.75' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E")`;
 
   return (
@@ -960,6 +1126,21 @@ export default function PixelGrid() {
               >
                 {isAnimMode ? '● Select' : 'Select'}
               </button>
+              <button
+                onClick={() => {
+                  const next = !iconAnimMode;
+                  iconAnimModeRef.current = next;
+                  setIconAnimMode(next);
+                  stopAnimation();
+                }}
+                className="text-xs px-2 py-0.5 rounded-full"
+                style={iconAnimMode
+                  ? { border: '1px solid #bf5af2', color: '#bf5af2' }
+                  : { color: '#444', border: '1px solid #2a2a2a' }}
+                title="Icon mode: pixels start on, turn off in sequence"
+              >
+                Icon
+              </button>
             </div>
             <button
               onClick={() => { setAnimSequence([]); stopAnimation(); }}
@@ -976,9 +1157,10 @@ export default function PixelGrid() {
           {/* Timing sliders */}
           {[
             { key: 'glowIn',  label: 'Fade in',  min: 0.05, max: 1.0, step: 0.05 },
-            { key: 'glowOut', label: 'Fade out', min: 0.05, max: 2.0, step: 0.05 },
-            { key: 'hold',    label: 'Hold',     min: 0.1,  max: 5.0, step: 0.1  },
-            { key: 'stagger', label: 'Stagger',  min: 0.1,  max: 3.0, step: 0.1  },
+            { key: 'glowOut',   label: 'Fade out',   min: 0.05, max: 2.0, step: 0.05 },
+            { key: 'hold',      label: 'Hold',       min: 0.1,  max: 5.0, step: 0.1  },
+            { key: 'stagger',   label: 'Stagger',    min: 0.1,  max: 3.0, step: 0.1  },
+            ...(animLoop ? [{ key: 'loopDelay', label: 'Loop delay', min: 0, max: 5.0, step: 0.1 }] : []),
           ].map(({ key, label, min, max, step }) => {
             const val = animTiming[key];
             const pct = (val - min) / (max - min);
@@ -1023,21 +1205,40 @@ export default function PixelGrid() {
             Shuffle & Play
           </button>
 
-          {/* Preview */}
-          <button
-            onClick={animPlaying ? stopAnimation : startAnimation}
-            className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl text-sm font-semibold"
-            style={{
-              background: '#1e1e1e',
-              color: animSequence.length === 0 && !animPlaying ? '#444' : '#fff',
-              border: '1px solid #2a2a2a',
-            }}
-          >
-            {animPlaying
-              ? <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
-              : <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>}
-            {animPlaying ? 'Stop' : 'Preview'}
-          </button>
+          {/* Loop toggle + Preview */}
+          <div className="flex gap-2">
+            <button
+              onClick={() => {
+                const next = !animLoop;
+                animLoopRef.current = next;
+                setAnimLoop(next);
+              }}
+              className="flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-xl text-sm font-semibold shrink-0"
+              style={animLoop
+                ? { background: '#1e1e1e', color: '#e84040', border: '1.5px solid #e84040' }
+                : { background: '#1e1e1e', color: '#555', border: '1px solid #2a2a2a' }}
+              title="Loop animation"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+              </svg>
+              Loop
+            </button>
+            <button
+              onClick={animPlaying ? stopAnimation : startAnimation}
+              className="flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl text-sm font-semibold"
+              style={{
+                background: '#1e1e1e',
+                color: animSequence.length === 0 && !animPlaying ? '#444' : '#fff',
+                border: '1px solid #2a2a2a',
+              }}
+            >
+              {animPlaying
+                ? <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
+                : <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>}
+              {animPlaying ? 'Stop' : 'Preview'}
+            </button>
+          </div>
         </div>
         </div> {/* end scrollable content */}
       </div>
@@ -1113,9 +1314,35 @@ export default function PixelGrid() {
                   cellStyle = grid[r][c]
                     ? { backgroundColor: grid[r][c].color }
                     : { backgroundColor: bgColor };
+                } else if (animTime >= 0 && iconAnimMode) {
+                  // Icon mode: all painted cells start glowing, turn off in sequence
+                  if (grid[r][c]) {
+                    const eff0 = grid[r][c].intensity;
+                    const iconI = seqIdx >= 0
+                      ? getIconPixelAnimIntensity(animTime, seqIdx, animTiming, animLoop)
+                      : 1; // not in sequence → stays fully on
+                    if (iconI > 0.01) {
+                      const { color } = grid[r][c];
+                      const eff = eff0 * iconI;
+                      cellStyle = {
+                        backgroundColor: lightenToL(color, 75 + eff * 20),
+                        position: 'relative', zIndex: 10, overflow: 'visible',
+                        boxShadow: [
+                          `0px 0px 96px rgba(0,0,0,0.25)`,
+                          `0px 0px 96px 8px ${color}${Math.round(eff * 255).toString(16).padStart(2, '0')}`,
+                          `0px 0px 32px rgba(255,255,255,${(eff * 0.32).toFixed(2)})`,
+                        ].join(', '),
+                        transition: 'none',
+                      };
+                    } else {
+                      cellStyle = { backgroundColor: bgColor, transition: 'none' };
+                    }
+                  } else {
+                    cellStyle = { backgroundColor: bgColor, transition: 'none' };
+                  }
                 } else if (animTime >= 0) {
                   if (seqIdx >= 0 && grid[r][c]) {
-                    const animI = getPixelAnimIntensity(animTime, seqIdx, animTiming);
+                    const animI = getPixelAnimIntensity(animTime, seqIdx, animTiming, animLoop);
                     if (animI > 0.01) {
                       const { color, intensity } = grid[r][c];
                       const eff = intensity * animI;
@@ -1273,6 +1500,33 @@ export default function PixelGrid() {
               <button onClick={handleExportMP4} disabled={isExportingVideo} className="flex items-center justify-center gap-1.5 w-full py-2 rounded-xl text-sm font-semibold" style={{ background: '#fff', color: '#000', opacity: isExportingVideo ? 0.5 : 1 }}>
                 <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
                 {isExportingVideo ? 'Rendering…' : 'Download'}
+              </button>
+            </div>
+
+            {/* Lottie JSON */}
+            <div>
+              <span className="text-xs mb-1.5 block" style={{ color: '#bf5af2' }}>Lottie JSON (Icon)</span>
+              <div className="flex items-center gap-2 mb-2">
+                <span className="text-xs shrink-0" style={{ color: '#555' }}>Duration</span>
+                <input
+                  type="number" min={0.5} max={60} step={0.5}
+                  value={lottieDuration}
+                  onChange={e => setLottieDuration(Math.max(0.5, Number(e.target.value)))}
+                  className="flex-1 bg-transparent text-sm font-mono outline-none text-right"
+                  style={{ color: '#bf5af2', borderBottom: '1px solid #3a2a4a' }}
+                />
+                <span className="text-xs shrink-0" style={{ color: '#555' }}>sec</span>
+              </div>
+              <button onClick={handleExportLottie} className="flex items-center justify-center gap-1.5 w-full py-2 rounded-xl text-sm font-semibold" style={{ background: '#1a1020', color: '#bf5af2', border: '1.5px solid #bf5af2' }}>
+                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
+                Download .json
+              </button>
+              <button
+                onClick={() => window.dispatchEvent(new CustomEvent('navigate', { detail: 'lottie-test' }))}
+                className="flex items-center justify-center gap-1.5 w-full py-2 rounded-xl text-sm font-semibold mt-1"
+                style={{ background: '#111', color: '#888', border: '1px solid #2a2a2a' }}
+              >
+                Test .json file
               </button>
             </div>
           </div>
