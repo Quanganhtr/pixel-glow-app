@@ -722,7 +722,7 @@ export default function PixelGrid() {
     canvas.toBlob(blob => navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]));
   };
 
-  const handleExportLottie = () => {
+  const handleExportLottie = (lightBg = false) => {
     const FPS = 60;
     const SCALE = 4;
     const CS = CELL_SIZE * SCALE;
@@ -815,14 +815,15 @@ export default function PixelGrid() {
         const cx = cellX(c), cy = cellY(r);
 
         // Core pixel first (will end up under glow after reverse)
+        const pixelFill = lightBg ? rawColor : (glowEnabled ? lightColor : rawColor);
         layers.push(makeLayer(`p_${r}_${c}`, cx, cy, [{ ty:'gr', it:[
           { ty:'rc', d:1, s:{a:0,k:[CS,CS]}, p:{a:0,k:[0,0]}, r:{a:0,k:CR} },
-          { ty:'fl', c:{a:0,k:glowEnabled ? lightColor : rawColor}, o:{a:0,k:100} },
+          { ty:'fl', c:{a:0,k:pixelFill}, o:{a:0,k:100} },
           { ty:'tr', p:{a:0,k:[0,0]}, a:{a:0,k:[0,0]}, s:{a:0,k:[100,100]}, r:{a:0,k:0}, o:{a:0,k:100} },
         ]}], opKF));
 
-        // Radial gradient glow halos (inner → outer, Add blend, on top after reverse)
-        if (glowEnabled) {
+        // Radial gradient glow halos — skipped for light bg export
+        if (glowEnabled && !lightBg) {
           for (const [size, maxOp] of [[CS*1.6, 55], [CS*2.8, 30], [CS*4.5, 14]]) {
             const gradData = [0, rv, gv, bv, 1, rv, gv, bv, 0, 1, 1, 0];
             layers.push(makeLayer(`gl_${r}_${c}_${size}`, cx, cy, [{ ty:'gr', it:[
@@ -839,10 +840,11 @@ export default function PixelGrid() {
     // reverse so index-0 = topmost (outer glow on top with Add blend = correct bloom)
     const lottie = { v:'5.7.4', fr:FPS, ip:0, op:totalFrames, w:W, h:H,
       nm:'PixelGlow Icon', ddd:0, assets:[], layers:layers.reverse() };
-    const blob = new Blob([JSON.stringify(lottie)], { type:'application/json' });
+    const json = JSON.stringify(lottie, (_, v) => typeof v === 'number' ? Math.round(v * 100) / 100 : v);
+    const blob = new Blob([json], { type:'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
-    a.href = url; a.download = 'pixelglow-icon.json'; a.click();
+    a.href = url; a.download = lightBg ? 'pixelglow-icon-light.json' : 'pixelglow-icon-dark.json'; a.click();
     URL.revokeObjectURL(url);
   };
 
@@ -947,7 +949,7 @@ export default function PixelGrid() {
           <div className="flex items-center gap-3">
             <span className="text-sm w-10 shrink-0" style={{ color: '#fff' }}>Size</span>
             <div className="flex flex-wrap gap-2">
-              {[8, 16, 32, 96, 124].map(size => (
+              {[8, 9, 11, 16, 17, 31, 32, 96, 124].map(size => (
                 <button
                   key={size}
                   onClick={() => { setBaseSize(size); applyRatio(size, ratioKey); }}
@@ -1517,9 +1519,13 @@ export default function PixelGrid() {
                 />
                 <span className="text-xs shrink-0" style={{ color: '#555' }}>sec</span>
               </div>
-              <button onClick={handleExportLottie} className="flex items-center justify-center gap-1.5 w-full py-2 rounded-xl text-sm font-semibold" style={{ background: '#1a1020', color: '#bf5af2', border: '1.5px solid #bf5af2' }}>
+              <button onClick={() => handleExportLottie(false)} className="flex items-center justify-center gap-1.5 w-full py-2 rounded-xl text-sm font-semibold" style={{ background: '#1a1020', color: '#bf5af2', border: '1.5px solid #bf5af2' }}>
                 <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
-                Download .json
+                Dark bg .json
+              </button>
+              <button onClick={() => handleExportLottie(true)} className="flex items-center justify-center gap-1.5 w-full py-2 rounded-xl text-sm font-semibold mt-1" style={{ background: '#111', color: '#aaa', border: '1px solid #333' }}>
+                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
+                Light bg .json
               </button>
               <button
                 onClick={() => window.dispatchEvent(new CustomEvent('navigate', { detail: 'lottie-test' }))}
