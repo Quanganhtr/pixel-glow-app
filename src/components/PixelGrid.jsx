@@ -424,14 +424,13 @@ export default function PixelGrid() {
       }
     };
 
-    recorder.start();
+    recorder.start(100);
     for (let f = 0; f < totalFrames; f++) {
       const t0 = performance.now();
       drawFrame(f / FPS);
       const elapsed = performance.now() - t0;
       await new Promise(resolve => setTimeout(resolve, Math.max(0, 1000 / FPS - elapsed)));
     }
-    recorder.requestData();
     recorder.stop();
   };
 
@@ -653,7 +652,20 @@ export default function PixelGrid() {
   </defs>
   ${els.join('\n  ')}
 </svg>`;
-    navigator.clipboard.writeText(svg);
+    const copyText = (text) => {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.cssText = 'position:fixed;opacity:0';
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+    };
+    if (navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(svg).catch(() => copyText(svg));
+    } else {
+      copyText(svg);
+    }
   };
 
   const handleCopyPNG = () => {
@@ -727,9 +739,19 @@ export default function PixelGrid() {
     const SCALE = 4;
     const CS = CELL_SIZE * SCALE;
     const GAP = pixelGap * SCALE;
-    const W = cols * CS + (cols - 1) * GAP;
-    const H = rows * CS + (rows - 1) * GAP;
     const CR = pixelRadius > 0 ? (pixelRadius / 100) * (CS / 2) : 0;
+
+    // Bounding box of filled cells only
+    let minR = rows, maxR = -1, minC = cols, maxC = -1;
+    for (let r = 0; r < rows; r++)
+      for (let c = 0; c < cols; c++)
+        if (grid[r][c]) { minR = Math.min(minR, r); maxR = Math.max(maxR, r); minC = Math.min(minC, c); maxC = Math.max(maxC, c); }
+    if (maxR === -1) return;
+    const bboxCols = maxC - minC + 1;
+    const bboxRows = maxR - minR + 1;
+    const W = bboxCols * CS + (bboxCols - 1) * GAP;
+    const H = bboxRows * CS + (bboxRows - 1) * GAP;
+
     const { glowIn, hold, glowOut, stagger, loopDelay = 0.5 } = animTiming;
     const n = Math.max(animSequence.length, 1);
     const totalFrames = Math.max(Math.ceil(lottieDuration * FPS), 2);
@@ -748,8 +770,8 @@ export default function PixelGrid() {
     const timeScale = lottieDuration / naturalLoopSec;
 
     const seqMap = new Map(animSequence.map((p, i) => [`${p.r},${p.c}`, i]));
-    const cellX = c => c * (CS + GAP) + CS / 2;
-    const cellY = r => r * (CS + GAP) + CS / 2;
+    const cellX = c => (c - minC) * (CS + GAP) + CS / 2;
+    const cellY = r => (r - minR) * (CS + GAP) + CS / 2;
 
     // eased keyframe helpers
     const kfAt = (frame, v) => ({ i:{x:[0.833],y:[0.833]}, o:{x:[0.167],y:[0.167]}, t:Math.round(frame), s:[v] });
@@ -847,6 +869,7 @@ export default function PixelGrid() {
     a.href = url; a.download = lightBg ? 'pixelglow-icon-light.json' : 'pixelglow-icon-dark.json'; a.click();
     URL.revokeObjectURL(url);
   };
+
 
   const grainBg = `url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.75' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E")`;
 
@@ -1535,6 +1558,7 @@ export default function PixelGrid() {
                 Test .json file
               </button>
             </div>
+
           </div>
         )}
       </div>
